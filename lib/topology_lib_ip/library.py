@@ -25,7 +25,238 @@ from __future__ import print_function, division
 from ipaddress import ip_address, ip_network, ip_interface
 from re import search
 from re import match
+from re import finditer
 from re import DOTALL
+
+
+def _parse_ip_addr(raw_result):
+    """
+    Parse the 'ip addr' command raw output
+
+    :param str raw_result: cli raw string result
+    :rtype: dict
+    :return: The parsed result of the ip addr command in a dictionary \
+        of the form:
+
+    ::
+
+    {
+        '1': {
+            'brd': '00:00:00:00:00:00',
+            'dev': 'lo',
+            'flags_str': ['LOOPBACK', 'UP', 'LOWER_UP'],
+            'group': 'default',
+            'inet': {
+                '127.0.0.1': {
+                    'mask': 8,
+                    'preferred_lft': 'forever',
+                    'scope': 'host lo',
+                    'valid_lft': 'forever'
+                }
+            },
+            'inet6': {
+                '::1': {
+                    'mask': 128,
+                    'preferred_lft': 'forever',
+                    'scope': 'host ',
+                    'valid_lft': 'forever'
+                }
+            },
+            'link': '00:00:00:00:00:00',
+            'link_type': 'loopback',
+            'mtu': 65536,
+            'os_index': '1',
+            'qdisc': 'noqueue',
+            'qlen': 65536,
+            'state': 'UNKNOWN'
+        },
+        '2': {
+            'brd': 'ff:ff:ff:ff:ff:ff',
+            'dev': 'bond0',
+            'flags_str': ['BROADCAST', 'MULTICAST', 'MASTER'],
+            'group': 'default',
+            'inet': {},
+            'inet6': {},
+            'link': 'd6:f5:8c:08:ec:1a',
+            'link_type': 'ether',
+            'mtu': 1500,
+            'os_index': '2',
+            'qdisc': 'noop',
+            'qlen': 1500,
+            'state': 'DOWN'
+        },
+        '3': {
+            'brd': 'ff:ff:ff:ff:ff:ff',
+            'dev': 'eth0',
+            'flags_str': ['BROADCAST', 'MULTICAST', 'UP', 'LOWER_UP'],
+            'group': 'default',
+            'inet': {
+                '15.255.133.69': {
+                    'brd': '15.255.135.255',
+                    'mask': 21,
+                    'preferred_lft': 'forever',
+                    'scope': 'global eth0',
+                    'valid_lft': 'forever'
+                }
+            },
+            'inet6': {
+                '2002:fff:853f:c:4a0f:cfff:feaf:605c': {
+                    'mask': 64,
+                    'preferred_lft': '0sec',
+                    'scope': 'global deprecated dynamic ',
+                    'valid_lft': '1888174sec'
+                },
+                'fe80::4a0f:cfff:feaf:605c': {
+                    'mask': 64,
+                    'preferred_lft': 'forever',
+                    'scope': 'link ',
+                    'valid_lft': 'forever'
+                },
+                'fec0::c:4a0f:cfff:feaf:605c': {
+                    'mask': 64,
+                    'preferred_lft': '0sec',
+                    'scope': 'site deprecated dynamic ',
+                    'valid_lft': '1888174sec'
+                }
+            },
+           'link': '48:0f:cf:af:60:5c',
+           'link_type': 'ether',
+           'mtu': 1500,
+           'os_index': '3',
+           'qdisc': 'mq',
+           'qlen': 1500,
+           'state': 'UP'
+        },
+        '4': {
+            'brd': 'ff:ff:ff:ff:ff:ff',
+            'dev': 'bdev',
+            'flags_str': ['BROADCAST', 'MULTICAST'],
+            'group': 'default',
+            'inet': {},
+            'inet6': {},
+            'link': '02:10:18:23:0b:41',
+            'link_type': 'ether',
+            'mtu': 1500,
+            'os_index': '4',
+            'qdisc': 'noop',
+            'qlen': 1500,
+            'state': 'DOWN'
+        }
+    }
+
+    """
+
+    result = {}
+    ip_addr_re = {}
+    ip_addr_re[0] = (
+        r'(?P<os_index>\d+):\s(?P<dev>\S+):\s\<(?P<flags_str>\S+)\>\s'
+        r'mtu\s(?P<mtu>\d+)\sqdisc\s(?P<qdisc>\S+)\sstate\s(?P<state>\S+)\s'
+        r'group\s(?P<group>\S+)(\s+|\s+qlen\s+(?P<qlen>\d+))'
+    )
+    ip_addr_re[1] = (
+        r'link\/(?P<link_type>\S+)\s(?P<link>\S{2}:\S{2}:\S{2}:\S{2}:\S{2}:\S{2})\s'  # noqa
+        r'brd\s(?P<brd>\S{2}:\S{2}:\S{2}:\S{2}:\S{2}:\S{2})'
+    )
+    ip_addr_re[2] = (
+        r'inet\s(?P<inet>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/(?P<inet_mask>\d+)\s'  # noqa
+        r'scope\s(?P<scope>.*)'
+    )
+    ip_addr_re[3] = (
+        r'inet\s(?P<inet>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/(?P<inet_mask>\d+)\s'  # noqa
+        r'brd\s(?P<brd>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s'
+        r'scope\s(?P<scope>.*)'
+    )
+    ip_addr_re[4] = (
+        r'inet6\s(?P<inet6>.*)/(?P<inet_mask>\d+)\s'
+        r'scope\s(?P<scope>.*)'
+    )
+    ip_addr_re[5] = (
+        r'valid_lft\s(?P<valid_lft>\S+)\s'
+        r'preferred_lft\s(?P<preferred_lft>\S+)'
+    )
+
+    for x in raw_result.splitlines():
+        if search(ip_addr_re[0], x):
+            inet_flg = 0
+            inet6_flg = 0
+            m = search(ip_addr_re[0], x)
+            interface_match = m.groupdict()
+            interface_match['flags_str'] = interface_match['flags_str'].split(',')  # noqa
+            interface_match['mtu'] = int(interface_match['mtu'])
+            interface_match['qlen'] = int(interface_match['qlen'])
+            result[interface_match['os_index']] = interface_match
+            index = interface_match['os_index']
+            result[index]["inet"] = {}
+            result[index]["inet6"] = {}
+
+        elif search(ip_addr_re[1], x):
+            m = search(ip_addr_re[1], x)
+            interface_match = m.groupdict()
+            result[index].update(interface_match)
+
+        elif search(ip_addr_re[2], x):
+            m = search(ip_addr_re[2], x)
+            interface_match = m.groupdict()
+            inet_update = {
+                interface_match['inet']: {
+                    "mask": interface_match['inet_mask'],
+                    "scope": interface_match['scope']
+                }
+            }
+            result[index]["inet"].update(inet_update)
+            inet_ip = interface_match['inet']
+            inet_flg = 1
+
+        elif search(ip_addr_re[3], x):
+            m = search(ip_addr_re[3], x)
+            interface_match = m.groupdict()
+            inet_update = {
+                interface_match['inet']: {
+                    "mask": int(interface_match['inet_mask']),
+                    "brd": interface_match['brd'],
+                    "scope": interface_match['scope']
+                }
+            }
+            result[index]["inet"].update(inet_update)
+            inet_ip = interface_match['inet']
+            inet_flg = 1
+
+        elif search(ip_addr_re[4], x):
+            m = search(ip_addr_re[4], x)
+            interface_match = m.groupdict()
+            inet6_update = {
+                interface_match['inet6']: {
+                    "mask": int(interface_match['inet_mask']),
+                    "scope": interface_match['scope']
+                }
+            }
+            result[index]["inet6"].update(inet6_update)
+            inet6_ip = interface_match['inet6']
+            inet6_flg = 1
+
+        elif search(ip_addr_re[5], x):
+            m = search(ip_addr_re[5], x)
+            interface_match = m.groupdict()
+
+            if inet_flg:
+                inet_update = {
+                    "valid_lft": interface_match['valid_lft'],
+                    "preferred_lft": interface_match['preferred_lft']
+                }
+                result[index]["inet"][inet_ip].update(inet_update)
+                inet_flg = 0
+                inet_ip = {}
+
+            elif inet6_flg:
+                inet6_update = {
+                    "valid_lft": interface_match['valid_lft'],
+                    "preferred_lft": interface_match['preferred_lft']
+                }
+                result[index]["inet6"][inet6_ip].update(inet6_update)
+                inet6_flg = 0
+                inet6_ip = {}
+
+    return result
 
 
 def _parse_ip_addr_show(raw_result):
@@ -92,6 +323,183 @@ def _parse_ip_addr_show(raw_result):
             if value is not None:
                 if value.isdigit():
                     result[key] = int(value)
+
+    return result
+
+
+def _parse_ip_link(raw_result):
+    """
+    Parse the 'ip link' command raw output
+
+    :param str raw_result: cli raw string result
+    :rtype: dict
+    :return: The parsed result of the ip link command in a dictionary \
+        of the form:
+
+    ::
+
+        {
+            '1': {
+                'qlen': 65536,
+                'qdisc': 'noqueue',
+                'group': 'default',
+                'flags_str': [
+                    'LOOPBACK',
+                    'UP',
+                    'LOWER_UP'
+                ],
+                'os_index': '1',
+                'dev': 'lo',
+                'mtu': 65536,
+                'state': 'UNKNOWN',
+                'link': '00:00:00:00:00:00',
+                'mode': 'DEFAULT',
+                'brd': '00:00:00:00:00:00',
+                'link_type': 'loopback'
+            },
+            '2': {
+                'qlen': 1500,
+                'qdisc': 'noop',
+                'group': 'default',
+                'flags_str': [
+                    'BROADCAST',
+                    'MULTICAST',
+                    'MASTER'
+                ],
+                'os_index': '2',
+                'dev': 'bond0',
+                'mtu': 1500,
+                'state': 'DOWN',
+                'link': 'd6:f5:8c:08:ec:1a',
+                'mode': 'DEFAULT',
+                'brd': 'ff:ff:ff:ff:ff:ff',
+                'link_type': 'ether'
+            },
+            '3': {
+                'qlen': 1500,
+                'qdisc': 'mq',
+                'group': 'default',
+                'flags_str': [
+                    'BROADCAST',
+                    'MULTICAST',
+                    'UP',
+                    'LOWER_UP'
+                ],
+                'os_index': '3',
+                'dev': 'eth0',
+                'mtu': 1500,
+                'state': 'UP',
+                'link': '48:0f:cf:af:60:5c',
+                'mode': 'DEFAULT',
+                'brd': 'ff:ff:ff:ff:ff:ff',
+                'link_type': 'ether'
+            },
+            '4': {
+                'qlen': 1500,
+                'qdisc': 'noop',
+                'group': 'default',
+                'flags_str': [
+                    'BROADCAST',
+                    'MULTICAST'
+                ],
+                'os_index': '4',
+                'dev': 'bdev',
+                'mtu': 1500,
+                'state': 'DOWN',
+                'link': '02:10:18:23:0b:41',
+                'mode': 'DEFAULT',
+                'brd': 'ff:ff:ff:ff:ff:ff',
+                'link_type': 'ether'
+            }
+        }
+    """
+
+    result = {}
+
+    ip_link_re = (
+        r'\S*(?P<os_index>\d+):\s(?P<dev>\S+):\s\<(?P<flags_str>\S+)\>\s'
+        r'mtu\s(?P<mtu>\d+)\sqdisc\s(?P<qdisc>\S+)\sstate\s(?P<state>\S+)\s'
+        r'mode\s(?P<mode>\S+)\sgroup\s(?P<group>\S+)(\s+|\s+qlen\s+(?P<qlen>\d+)\s+)'  # noqa
+        r'link\/(?P<link_type>\S+)\s(?P<link>\S{2}:\S{2}:\S{2}:\S{2}:\S{2}:\S{2})\s'  # noqa
+        r'brd\s(?P<brd>\S{2}:\S{2}:\S{2}:\S{2}:\S{2}:\S{2})'
+    )
+
+    for re_match in finditer(ip_link_re, raw_result, DOTALL):
+        interface_match = re_match.groupdict()
+        interface_match['flags_str'] = interface_match['flags_str'].split(',')
+        result[interface_match['os_index']]['mtu'] = int(interface_match['mtu'])  # noqa
+        result[interface_match['os_index']]['qlen'] = int(interface_match['qlen'])  # noqa
+        result[interface_match['os_index']] = interface_match
+
+    return result
+
+
+def _parse_ip_route_show(raw_result):
+    '''
+    Parses the ip route show command output.
+
+    :param str raw_result: Raw output string from command
+    :rtype: dict
+    :return: The parsed result of the ip route command in a \
+        dictionary of the form:
+
+    ::
+
+        {
+            '10.20.8.0/21': {
+                'dest': '10.20.8.0/21',
+                'dev': 'eth0',
+                'proto': 'kernel',
+                'scope': 'link',
+                'src': '10.20.10.1'
+            },
+            '2.0.255.5': {
+                'dest': '2.0.255.5',
+                'dev': '31',
+                'next_hop': '2.0.40.2',
+                'proto': 'zebra'
+            },
+            '2.0.255.6': {
+                'dest': '2.0.255.6',
+                'dev': '32',
+                'next_hop': '2.0.41.2',
+                'proto': 'zebra'
+            },
+            '2.0.40.0/30': {
+                'dest': '2.0.40.0/30',
+                'dev': '31',
+                'proto': 'kernel',
+                'scope': 'link',
+                'src': '2.0.40.1'
+            },
+            'default': {
+                'dest': 'default',
+                'dev': 'eth0',
+                'next_hop': '10.20.8.1'
+            }
+        }
+    '''
+
+    result = {}
+
+    ip_route_re = (
+        r'(?P<dest>default|\d+.\d+.\d+.\d+(?:/\d+|))'
+        r'(?:\s+via\s(?P<next_hop>\d+.\d+.\d+.\d+)|)'
+        r'(?:\s+dev\s(?P<dev>\S+)|)'
+        r'(?:\s+proto\s(?P<proto>\S+)|)'
+        r'(?:\s+scope\s(?P<scope>\S+)|)'
+        r'(?:\s+src\s(?P<src>\d+.\d+.\d+.\d+)|)'
+    )
+
+    re_results = finditer(ip_route_re, raw_result)
+    if re_results:
+        for re_route in re_results:
+            partial = re_route.groupdict()
+            # remove keys with None value
+            for k in partial.keys():
+                if partial[k] is None:
+                    del partial[k]
+            result[partial['dest']] = partial
 
     return result
 
@@ -320,6 +728,63 @@ def add_link_type_vlan(enode, portlbl, name, vlan_id, shell=None):
     enode.ports[name] = name
 
 
+def ip_addr(enode, shell=None):
+    """
+    Show the ip link table from the swns of a device
+
+    :param enode: Engine node to communicate with.
+    :type enode: topology.platforms.base.BaseNode
+    :rtype: dict
+    :return: A dictionary as returned by
+     :func: topology_lib_ip.parser._parse_ip_addr
+    """
+    d = None
+
+    # change into the appropriate context on device
+    cmd = 'ip netns exec swns ip addr'
+    response = enode(cmd, shell=shell)
+    d = _parse_ip_addr(response)
+    return d
+
+
+def ip_link(enode, shell=None):
+    """
+    Show the ip link table from the swns of a device
+
+    :param enode: Engine node to communicate with.
+    :type enode: topology.platforms.base.BaseNode
+    :rtype: dict
+    :return: A dictionary as returned by
+     :func: topology_lib_ip.parser._parse_ip_link
+    """
+    d = None
+
+    # change into the appropriate context on device
+    cmd = 'ip netns exec swns ip link'
+    response = enode(cmd, shell=shell)
+    d = _parse_ip_link(response)
+    return d
+
+
+def ip_route_show(enode, shell=None):
+    """
+    Show the ip route table from the swns of a device
+
+    :param enode: Engine node to communicate with.
+    :type enode: topology.platforms.base.BaseNode
+    :rtype: dict
+    :return: A dictionary as returned by
+     :func: topology_lib_ip.parser._parse_ip_route_show
+    """
+    d = None
+
+    # change into the appropriate context on device
+    cmd = 'ip netns exec swns ip route show'
+    response = enode(cmd, shell=shell)
+    d = _parse_ip_route_show(response)
+    return d
+
+
 def remove_link_type_vlan(enode, name, shell=None):
     """
     Delete a virtual link.
@@ -381,7 +846,10 @@ __all__ = [
     'remove_ip',
     'add_route',
     'add_link_type_vlan',
+    'ip_addr',
+    'ip_link',
+    'ip_route_show',
     'remove_link_type_vlan',
     'sub_interface',
-    'show_interface'
+    'show_interface',
 ]
